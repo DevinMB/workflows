@@ -39,6 +39,8 @@ jobs:
 | `smoke` | `true` | start the image and wait for its `HEALTHCHECK` to report healthy |
 | `smoke-env` | empty | `KEY=value` lines for the smoke container (never secrets) |
 | `caller-workflow` | `ci.yml` | the caller's file, dispatched on main after a gate merge |
+| `build-args` | empty | extra `KEY=value` build arguments, one per line (never secrets) |
+| `push-ref` | `refs/heads/main` | the branch whose pushes publish the image; a second channel (e.g. beta) sets `refs/heads/beta` |
 | `gate` | `true` | run the Dependabot gate after this build (see below for several images) |
 
 ### Several images in one repo
