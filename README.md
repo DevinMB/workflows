@@ -39,6 +39,24 @@ jobs:
 | `smoke` | `true` | start the image and wait for its `HEALTHCHECK` to report healthy |
 | `smoke-env` | empty | `KEY=value` lines for the smoke container (never secrets) |
 | `caller-workflow` | `ci.yml` | the caller's file, dispatched on main after a gate merge |
+| `gate` | `true` | run the Dependabot gate after this build (see below for several images) |
+
+### Several images in one repo
+
+Call `app-ci.yml` once per image with `gate: false`, then the gate once, after all of them:
+
+```yaml
+jobs:
+  api:
+    uses: DevinMB/workflows/.github/workflows/app-ci.yml@main
+    with: { image: ghcr.io/devinmb/<app>-api, context: api, gate: false }
+  web:
+    uses: DevinMB/workflows/.github/workflows/app-ci.yml@main
+    with: { image: ghcr.io/devinmb/<app>-web, context: web, gate: false }
+  gate:
+    needs: [api, web]
+    uses: DevinMB/workflows/.github/workflows/dependabot-gate.yml@main
+```
 
 All actions are pinned to commit SHAs. Inputs reach shell steps through environment variables, never by expression interpolation inside a script.
 

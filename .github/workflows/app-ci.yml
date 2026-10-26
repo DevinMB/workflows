@@ -47,6 +47,10 @@ on:
         description: "The calling workflow file, dispatched on main after a gate merge"
         type: string
         default: "ci.yml"
+      gate:
+        description: "Run the Dependabot merge gate after this build. Repos with several images set false on each and call dependabot-gate.yml once, after all builds"
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -127,31 +131,7 @@ jobs:
   # Dependabot PRs only, and only after build passed every gate above.
   gate:
     needs: build
-    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
-    runs-on: ubuntu-24.04
-    steps:
-      - id: meta
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
-
-      - name: Merge patch and minor updates, then build main
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          WORKFLOW: ${{ inputs.caller-workflow }}
-          UPDATE: ${{ steps.meta.outputs.update-type }}
-        run: |
-          set -eu
-          gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --merge --delete-branch
-          gh workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref main
-          echo "### Merged #$PR ($UPDATE) and started the main build" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Majors wait for Devin
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          gh label create waits-for-devin --repo "$GITHUB_REPOSITORY" --color FBCA04 \
-            --description "Major update: merged by hand after review" 2>/dev/null || true
-          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label waits-for-devin
+    if: inputs.gate && github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    uses: DevinMB/workflows/.github/workflows/dependabot-gate.yml@main
+    with:
+      caller-workflow: ${{ inputs.caller-workflow }}
