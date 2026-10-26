@@ -54,6 +54,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Runners have ~14 GB free; a large image exists up to three times
+      # (buildx cache, the loaded image, Trivy's export). Toolchains this
+      # pipeline never uses take ~20 GB more.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
       # Layers are cached in GitHub's Actions cache (free, not billed as minutes),
       # so an update that touches one requirement rebuilds only from there.
       # PR builds read the cache main's builds write.
