@@ -1,0 +1,23 @@
+name: lint
+on:
+  pull_request:
+  push:
+    branches: [main]
+# Actions are pinned to commit SHAs: tags can be moved or deleted.
+permissions:
+  contents: read
+
+jobs:
+  workflows:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # app-ci.yml is called by every app repo; a broken one breaks them all.
+      - name: actionlint (checksum-verified)
+        run: |
+          set -eu
+          v=1.7.12; f=actionlint_${v}_linux_amd64.tar.gz
+          curl -sfLO "https://github.com/rhysd/actionlint/releases/download/v$v/$f"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $f" | sha256sum -c -
+          tar -xzf "$f" actionlint
+          ./actionlint -color

@@ -1,0 +1,149 @@
+# Shared CI for app repos. An app calls it from its own .github/workflows/ci.yml;
+# see README.md for the caller.
+#
+#   pull_request   build, tests inside the image, healthcheck smoke, Trivy.
+#                  Dependabot PRs then pass the merge gate: patch and minor
+#                  updates merge on green; majors are labelled waits-for-devin.
+#   push to main / workflow_dispatch on main
+#                  the same gates, then the image is pushed to GHCR as
+#                  sha-<7 chars> (what homelab-stacks deploys) and main.
+#
+# The gate is a workflow job, not branch protection (which GitHub Free lacks on
+# private repos): it merges only from the job that ran the gates.
+# A merge made with GITHUB_TOKEN starts no push workflow, so the gate
+# dispatches the caller's workflow on main itself (dispatch is the exception).
+#
+# Inputs reach shell steps through env, never by ${{ }} inside a script.
+
+name: app-ci
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "GHCR image, e.g. ghcr.io/devinmb/deals-scanner"
+        type: string
+        required: true
+      context:
+        type: string
+        default: "."
+      dockerfile:
+        description: "Path relative to the context"
+        type: string
+        default: "Dockerfile"
+      test-command:
+        description: "Run inside the built image with sh -c; empty skips tests"
+        type: string
+        default: ""
+      smoke:
+        description: "Start the image and wait for its HEALTHCHECK to report healthy"
+        type: boolean
+        default: true
+      smoke-env:
+        description: "Extra KEY=value lines for the smoke container (no secrets)"
+        type: string
+        default: ""
+      caller-workflow:
+        description: "The calling workflow file, dispatched on main after a gate merge"
+        type: string
+        default: "ci.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Layers are cached in GitHub's Actions cache (free, not billed as minutes),
+      # so an update that touches one requirement rebuilds only from there.
+      # PR builds read the cache main's builds write.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          pull: true
+          load: true
+          tags: app:ci
+          build-args: COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Tests (inside the image)
+        if: inputs.test-command != ''
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: docker run --rm --network none --entrypoint sh app:ci -c "$TEST_COMMAND"
+
+      - name: Smoke (healthcheck)
+        if: inputs.smoke
+        env:
+          SMOKE_ENV: ${{ inputs.smoke-env }}
+        run: |
+          set -eu
+          if [ "$(docker inspect -f '{{if .Config.Healthcheck}}yes{{end}}' app:ci)" != yes ]; then
+            echo "::error::the image has no HEALTHCHECK; add one or set smoke: false"; exit 1
+          fi
+          printf '%s\n' "$SMOKE_ENV" > smoke.env
+          docker run -d --name smoke --env-file smoke.env app:ci
+          for i in $(seq 1 60); do
+            s=$(docker inspect -f '{{.State.Health.Status}}' smoke)
+            [ "$s" = healthy ] && { echo "healthy after ${i}x2 s"; exit 0; }
+            [ "$(docker inspect -f '{{.State.Running}}' smoke)" = true ] || break
+            sleep 2
+          done
+          echo "::error::container did not become healthy (last: $s)"; docker logs --tail 50 smoke; exit 1
+
+      - name: Trivy (fixable HIGH and CRITICAL fail the build)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: app:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Push to GHCR
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        env:
+          IMAGE: ${{ inputs.image }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="sha-${GITHUB_SHA::7}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for t in "$tag" main; do docker tag app:ci "$IMAGE:$t"; docker push -q "$IMAGE:$t"; done
+          echo "### Pushed \`$IMAGE:$tag\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # Dependabot PRs only, and only after build passed every gate above.
+  gate:
+    needs: build
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Merge patch and minor updates, then build main
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          WORKFLOW: ${{ inputs.caller-workflow }}
+          UPDATE: ${{ steps.meta.outputs.update-type }}
+        run: |
+          set -eu
+          gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --merge --delete-branch
+          gh workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref main
+          echo "### Merged #$PR ($UPDATE) and started the main build" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Majors wait for Devin
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create waits-for-devin --repo "$GITHUB_REPOSITORY" --color FBCA04 \
+            --description "Major update: merged by hand after review" 2>/dev/null || true
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label waits-for-devin
