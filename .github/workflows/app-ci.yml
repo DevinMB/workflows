@@ -4,7 +4,7 @@
 #   pull_request   build, tests inside the image, healthcheck smoke, Trivy.
 #                  Dependabot PRs then pass the merge gate: patch and minor
 #                  updates merge on green; majors are labelled waits-for-devin.
-#   push to main / workflow_dispatch on main
+#   push to main / workflow_dispatch on main (or the push-ref input's branch)
 #                  the same gates, then the image is pushed to GHCR as
 #                  sha-<7 chars> (what homelab-stacks deploys) and main.
 #
@@ -47,6 +47,14 @@ on:
         description: "The calling workflow file, dispatched on main after a gate merge"
         type: string
         default: "ci.yml"
+      build-args:
+        description: "Extra KEY=value build arguments, one per line (never secrets)"
+        type: string
+        default: ""
+      push-ref:
+        description: "The branch whose pushes publish the image, as a ref. A second channel (e.g. beta) sets refs/heads/beta"
+        type: string
+        default: "refs/heads/main"
       gate:
         description: "Run the Dependabot merge gate after this build. Repos with several images set false on each and call dependabot-gate.yml once, after all builds"
         type: boolean
@@ -79,7 +87,9 @@ jobs:
           pull: true
           load: true
           tags: app:ci
-          build-args: COMMIT=${{ github.sha }}
+          build-args: |
+            COMMIT=${{ github.sha }}
+            ${{ inputs.build-args }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -117,7 +127,7 @@ jobs:
           exit-code: "1"
 
       - name: Push to GHCR
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        if: github.ref == inputs.push-ref && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         env:
           IMAGE: ${{ inputs.image }}
           GH_TOKEN: ${{ github.token }}
